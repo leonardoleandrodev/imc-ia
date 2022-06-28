@@ -1,0 +1,191 @@
+﻿<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IMC TensorFlow</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" integrity="sha384-1BmE4kWBq78iYhFldvKuhfTAU6auU8tT94WrHftjDbrCEXSU1oBoqyl2QvZ6jIW3" crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.min.js" integrity="sha384-QJHtvGhmr9XOIpI6YVutG+2QOK9T+ZnN4kzFN1RtK3zEFEIsxhlmWl5/YESvpZ13" crossorigin="anonymous"></script>
+</head>
+<style>
+body {
+  font-family: 'Tahoma', sans-serif !important;
+  font-size: 0.9rem;
+}
+</style>
+<body class="col-12 bg-body p-3 m-3">
+    <section class="col-12 m-0 p-0">
+        <div class="col-4 col-sm-12 col-md-8 col-xl-4 my-auto mx-auto p-1 card">
+            <div class="input-group input-group-sm mb-4">
+                <span class="input-group-text" id="inputGroup-sizing-sm">Digite o Peso</span>
+                <input type="number"class="form-control"  name="peso" id="peso" min=50 max="200" step="0.1" value=70 placeholder="Kg">
+                <span class="input-group-text" id="inputGroup-sizing-sm">Digite a Altura</span>
+                <input type="number"class="form-control"  name="altura" id="altura" min="1.00" max="2.50" value="1.75" step="0.05" placeholder="metros">
+                <input type="button" class="form-control" onclick="tf.io.removeModel('localstorage://imc-ia');" value=Clear placeholder="Valor">
+            </div>
+            <div class="col-12 text-center">
+                <div class="result ">Preencha os Campos para analizar....</div>
+            </div>
+
+        </div>
+    </section>
+</body>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.12.0/dist/tf.min.js"></script>
+<script>
+document.querySelector("#peso").addEventListener('change',calcular);
+document.querySelector("#altura").addEventListener('change',calcular);
+
+var xk = [];
+var yk = [];
+var tm = null;
+var res = null;
+const bitSize = 32;
+
+var FEATURE_RESULTS = null;
+function onBatchEnd(batch, logs) {
+    document.querySelector(".result").classList.remove("text-center");
+    document.querySelector(".result").innerText = `Precisão  b${logs.batch} l${logs.loss} s${logs.size} a${logs.binaryAccuracy}\n`;
+}
+async function calcular(){
+tm = Date.now();
+res =  document.querySelector(".result");
+res.setAttribute("class","text-primary result");
+res.innerHTML = "Processando...";
+
+ try {  
+     const model = await tf.loadLayersModel('localstorage://imc-ia')
+     preditar(model);  
+ } catch (error) {
+    treinar();
+ } 
+
+
+}
+async function treinar(){
+
+const model = tf.sequential();
+var xs = [];
+var ys = [];
+for (let pesos = 50; pesos < 130; pesos += 0.25){
+    for (let alturas = 1.5; alturas < 2.1;alturas += 0.05){
+        xs.push([parseFloat(pesos.toFixed(2)),parseFloat(alturas.toFixed(2))]);
+        ys.push(parseFloat(calculaIMC(pesos/(alturas*alturas))));
+    }
+}
+
+const INPUTS = xs;
+const OUTPUTS = ys;
+
+tf.util.shuffleCombo(INPUTS, OUTPUTS);
+const INPUTS_TENSOR = tf.tensor2d(INPUTS);
+const OUTPUTS_TENSOR = tf.tensor1d(OUTPUTS);
+FEATURE_RESULTS = normalize(INPUTS_TENSOR);
+INPUTS_TENSOR.dispose();
+
+model.add(tf.layers.dense({units: 1, inputShape: [2] }));
+model.compile({
+    optimizer: tf.train.sgd(0.05),
+    loss: 'meanAbsoluteError'
+  });
+
+let results = await model.fit(
+FEATURE_RESULTS.NORMALIZED_VALUES,
+OUTPUTS_TENSOR,{
+epochs:10,
+batchSize: 64,
+shuffle: true,
+validationSplit: 0.10,
+callbacks: {onBatchEnd}}).catch((e) => {
+        console.log('err ',e);
+});
+
+await model.save('localstorage://imc-ia');
+preditar(model);
+//model.dispose();
+
+}
+async function preditar(model){
+//console.log(model)
+var numPeso =  parseFloat(document.querySelector("#peso").value);
+var numAltura =  parseFloat(document.querySelector("#altura").value);
+
+tf.tidy(function() {
+    //FEATURE_RESULTS = normalize();
+
+let newInput = normalize(tf.tensor2d(
+        [
+            [
+                parseFloat(numPeso.toFixed(2)),
+                parseFloat(numAltura.toFixed(2))
+            ]
+        ]
+    ),FEATURE_RESULTS.MIN_VALUES,FEATURE_RESULTS.MAX_VALUES);
+let output = model.predict(newInput.NORMALIZED_VALUES);
+mostraResultado(output.dataSync());
+
+});
+}
+function calculaIMC(valor){
+    if(valor<18.5){
+        return 0;
+    }else if(valor >= 18.5 && valor<24.9){
+        return 1;
+    }else if(valor >= 24.9 && valor<29.9){
+        return 2;
+    }else if(valor >= 29.9 && valor<34.9){
+        return 3;
+    }else if(valor >= 34.9 && valor< 39.9){
+        return 4;
+    }else{
+        return 5;
+    }
+}
+// Function to take a Tensor and normalize values
+// with respect to each column of values contained in that Tensor.
+function normalize(tensor, min, max) {
+  const result = tf.tidy(function() {
+    // Find the minimum value contained in the Tensor.
+    const MIN_VALUES = min || tf.min(tensor, 0);
+
+    // Find the maximum value contained in the Tensor.
+    const MAX_VALUES = max || tf.max(tensor, 0);
+
+    // Now calculate subtract the MIN_VALUE from every value in the Tensor
+    // And store the results in a new Tensor.
+    const TENSOR_SUBTRACT_MIN_VALUE = tf.sub(tensor, MIN_VALUES);
+
+    // Calculate the range size of possible values.
+    const RANGE_SIZE = tf.sub(MAX_VALUES, MIN_VALUES);
+
+    // Calculate the adjusted values divided by the range size as a new Tensor.
+    const NORMALIZED_VALUES = tf.div(TENSOR_SUBTRACT_MIN_VALUE, RANGE_SIZE);
+    
+    // Return the important tensors.
+    return {NORMALIZED_VALUES, MIN_VALUES, MAX_VALUES};
+  });
+  return result;
+}
+function mostraResultado(resPred){
+           
+            resPred = parseFloat(resPred);
+            var tmres = (Date.now()-tm);
+            var resTexto = "ERROO";
+            if(resPred<0){resTexto = "Magreza Preocupante"};
+            if(resPred>=0){resTexto = "Abaixo do Peso"};
+            if(resPred>=1){resTexto = "Peso Normal"};
+            if(resPred>=2){resTexto = "Excesso de Peso"};
+            if(resPred>=3){resTexto = "Obesidade"};
+            if(resPred>=4){resTexto = "Obesidade Extrema"};
+            if(resPred>=5){resTexto = "Obesidade Extrema Super"};            
+            if(resPred>=6){resTexto = "Obesidade Extrema Blaster"};
+            var res =  document.querySelector(".result");
+            res.innerHTML = "Resultado: <b>" + resTexto  + "</b> (" + resPred.toFixed(2) + ")";
+            res.innerHTML += " " +  tmres + "ms";
+            res.setAttribute("class","text-success result");
+}
+window.onload = ()=>{
+    treinar();
+};
+</script>
+</html>
